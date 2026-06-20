@@ -1,0 +1,12 @@
+﻿node_modules
+.next
+.vercel
+.env
+.env.local
+.env.production
+.env.development
+.env.test
+*.log
+*.tsbuildinfo
+*.bak_final
+tool-results/

@@ -1,0 +1,116 @@
+﻿// Agent CaMate — Prisma schema
+// SQLite database for caching geocoding, weather snapshots, and agent runs.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+/// Cached geocoding results from Nominatim/OSM.
+model GeoCache {
+  id        String   @id @default(cuid())
+  query     String   @unique // normalized address query
+  lat       Float
+  lng       Float
+  display   String?
+  source    String   @default("nominatim")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Snapshot of weather signals fetched for a store at a given time.
+model WeatherSnapshot {
+  id        String   @id @default(cuid())
+  storeId   String
+  lat       Float
+  lng       Float
+  payload   String   // JSON string of the full weather signal bundle
+  source    String   @default("open-meteo")
+  isLive    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([storeId, createdAt])
+}
+
+/// Persisted agent run (so a manager can recall a past briefing).
+model AgentRun {
+  id          String   @id @default(cuid())
+  storeId     String
+  storeName   String
+  triggeredAt DateTime @default(now())
+  traceJson   String   // full execution trace (array of steps)
+  planJson    String   // final action plan
+  briefingJson String  // manager briefing
+  confidence  Float
+  isLive      Boolean
+
+  @@index([storeId, triggeredAt])
+}
+
+/// Admin-configured data source (non-secret config only).
+/// API keys are NEVER stored here — they live in server-side env vars.
+model DataSourceConfig {
+  id          String   @id
+  name        String
+  type        String   // weather | google-maps | pos | inventory | staffing | complaint | ai-model | csv-upload
+  apiUrl      String?
+  headers     String?  // JSON string of extra headers (no secrets)
+  fieldMapping String? // JSON string of field mapping
+  status      String   @default("not-configured") // connected | error | untested | not-configured
+  lastTestedAt DateTime?
+  lastError   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// End-of-day actual operations results for the learning loop.
+model DayActual {
+  id                 String   @id @default(cuid())
+  storeId            String
+  runId              String   @unique
+  actualLunchOrders  Int
+  actualDinnerOrders Int
+  actualWasteKg      Float
+  actualStockoutCount Int
+  managerFeedback    String?
+  createdAt          DateTime @default(now())
+
+  @@index([storeId])
+}
+
+/// Persistent automation tasks generated for store runs.
+model AutomationTask {
+  id               String    @id
+  runId            String
+  storeId          String
+  storeName        String
+  category         String
+  title            String
+  description      String
+  content          String
+  status           String
+  requiresApproval Boolean
+  riskLevel        String
+  reason           String
+  dataUsedJson     String    // JSON string of string[]
+  confidence       Float
+  riskNote         String
+  generatedAt      DateTime  @default(now())
+  submittedAt      DateTime?
+  decidedAt        DateTime?
+  decidedBy        String?
+  executedAt       DateTime?
+  auditLogJson     String    // JSON string of audit log items
+
+  @@index([runId])
+  @@index([storeId])
+}
+
+
+
+

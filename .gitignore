@@ -12,3 +12,17 @@
 tool-results/
 .vercel
 .env*
+
+.env
+.env.local
+.env.production
+.env.development
+.env.test
+.vercel-env-input.txt
+node_modules
+.next
+.vercel
+*.log
+*.tsbuildinfo
+*.bak_final
+tool-results/

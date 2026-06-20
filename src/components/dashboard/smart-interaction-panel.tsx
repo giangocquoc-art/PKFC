@@ -137,64 +137,44 @@ function SourceAttribution({ sources }: { sources: { label: string; value: strin
   const { lang } = useLang();
   if (!sources || sources.length === 0) return null;
   return (
-    <div className="mt-2 rounded-md border border-border/50 bg-background/50 p-1.5">
-      <div className="mb-1 flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
-        <ExternalLink className="h-2.5 w-2.5" />
-        {lang === "vi" ? "Nguồn đối chiếu" : "Sources"}
+    <details className="mt-2 text-xs">
+      <summary className="cursor-pointer text-[11px] font-semibold text-neutral-600 hover:text-foreground select-none">
+        {lang === "vi" ? "▸ Xem bằng chứng" : "▸ View sources"} ({sources.length})
+      </summary>
+      <div className="mt-1.5 rounded-md border border-border/50 bg-background/50 p-1.5 space-y-1">
+        <div className="flex flex-wrap gap-1">
+          {sources.map((s, j) => (
+            <Badge key={j} variant="secondary" className="gap-0.5 text-[9px]">
+              <CornerDownRight className="h-2 w-2" />
+              <span className="font-medium">{s.label}:</span> {s.value}
+            </Badge>
+          ))}
+        </div>
       </div>
-      <div className="flex flex-wrap gap-1">
-        {sources.map((s, j) => (
-          <Badge key={j} variant="secondary" className="gap-0.5 text-[9px]">
-            <CornerDownRight className="h-2 w-2" />
-            <span className="font-medium">{s.label}:</span> {s.value}
-          </Badge>
-        ))}
-      </div>
-    </div>
+    </details>
   );
 }
 
 function cleanChatText(text: string) {
-  return text
+  if (!text) return "";
+  let clean = text
     .replace(/```(?:json)?/gi, "")
     .replace(/```/g, "")
     .replace(/contextObj/gi, "dữ liệu phiên chạy")
     .replace(/^[\s{[][^\n]{0,80}$/gm, "")
-    .slice(0, 1800)
     .trim();
+  
+  // Clean raw headers if rendering
+  clean = clean.replace(/\*\*Nhận định chính:\*\*/gi, "Nhận định chính:");
+  clean = clean.replace(/\*\*Vì sao:\*\*/gi, "Vì sao:");
+  clean = clean.replace(/\*\*Nên làm ngay:\*\*/gi, "Nên làm ngay:");
+  clean = clean.replace(/\*\*Mức độ tin cậy:\*\*/gi, "Mức độ tin cậy:");
+  
+  // Limit answer size and trim duplicate empty lines
+  clean = clean.replace(/\n{3,}/g, "\n\n");
+  return clean.slice(0, 1800).trim();
 }
 
-/* ─── LLM Badge ─── */
-function LLMBadge({ mode, providerMode, modelUsed, confidence }: { mode?: string; providerMode?: "router" | "fallback"; modelUsed?: string; confidence?: number }) {
-  const { lang } = useLang();
-  const isLive = providerMode === "router" || mode === "live";
-  return (
-    <div className="flex items-center gap-1.5">
-      <Badge
-        variant="outline"
-        className={cn(
-          "gap-1 text-[9px] font-semibold",
-          isLive ? "risk-bg-low risk-border-low risk-text-low" : "risk-bg-medium risk-border-medium risk-text-medium",
-        )}
-      >
-        <Sparkles className="h-2.5 w-2.5" />
-        {isLive 
-          ? (lang === "vi" ? "Đang dùng Gemini" : "Using Gemini") 
-          : (lang === "vi" ? "Chế độ dự phòng" : "Fallback mode")}
-      </Badge>
-      {isLive && modelUsed && (
-        <span className="text-[9px] text-muted-foreground">
-          {lang === "vi" ? "Mô hình" : "Model"}: {modelUsed}
-        </span>
-      )}
-      {confidence != null && (
-        <span className="text-[9px] text-muted-foreground">
-          {(confidence * 100).toFixed(0)}% {lang === "vi" ? "độ tin cậy" : "confidence"}
-        </span>
-      )}
-    </div>
-  );
-}
 
 export interface SmartInteractionPanelProps {
   storeId: string | null;
@@ -304,7 +284,7 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
           <div>
             <CardTitle className="flex items-center gap-2 text-base">
               <Bot className="h-4 w-4 text-[#E4002B]" />
-              {lang === "vi" ? "Hỏi Trợ lý CaMate" : "Ask CaMate Assistant"}
+              {lang === "vi" ? "Hỏi trợ lý CaMate" : "Ask CaMate Assistant"}
             </CardTitle>
             <p className="mt-1 text-xs text-muted-foreground">
               {activeDescription} · {activeLabel}
@@ -312,40 +292,18 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
             {/* Status bar */}
             {runId && (
               <div className="mt-2 flex flex-wrap gap-1.5 items-center text-[10px]">
-                {/* Mode indicator */}
-                <Badge variant="outline" className={cn(
-                  "text-[9px] font-bold px-1.5 h-4 flex items-center shrink-0",
-                  isRouterActive 
-                    ? "bg-emerald-50 text-emerald-700 border-emerald-200" 
-                    : "bg-amber-50 text-amber-700 border-amber-200"
-                )}>
-                  {modeLabel}
-                </Badge>
+                <span className="text-neutral-500 font-semibold">
+                  {lang === "vi" ? "Đang trả lời dựa trên phiên phân tích hiện tại" : "Answering based on current shift analysis"}
+                </span>
 
-                {/* Model name */}
-                  {isRouterActive && displayModel && (
-                   <span className="text-neutral-400 font-semibold shrink-0">
-                     {lang === "vi" ? "Mô hình" : "Model"}: {displayModel}
-                   </span>
-                 )}
-
-                {/* Fallback warning badge */}
-                {isFallbackActive && (
-                  <Badge variant="outline" className="text-[9px] font-bold bg-amber-50 text-amber-700 border-amber-200 gap-1 h-4 px-1.5 shrink-0">
-                    {lang === "vi" ? "Mô phỏng bằng quy tắc" : "Rule simulation"}
-                  </Badge>
-                )}
-
-                {/* Demo warning badge */}
                 {isDemo && (
                   <Badge variant="destructive" className="text-[9px] font-bold bg-red-100 text-red-700 border-red-200 h-4 px-1.5 shrink-0">
-                    {lang === "vi" ? "Đang dùng dữ liệu demo/mô phỏng" : "Using simulated/demo data"}
+                    {lang === "vi" ? "Dữ liệu mô phỏng" : "Simulated data"}
                   </Badge>
                 )}
               </div>
             )}
           </div>
-          {runId && messages.length > 0 && <LLMBadge mode={messages[messages.length - 1].mode} providerMode={messages[messages.length - 1].providerMode} modelUsed={messages[messages.length - 1].modelUsed} />}
         </div>
         {/* ── Role selector — pill-style buttons with icons ── */}
         <div className="mt-3 flex gap-1.5">
@@ -444,7 +402,7 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
                       {m.draftReply && (
                         <div className="rounded-lg border-l-2 border-amber-400 bg-amber-500/10 p-2">
                           <div className="flex items-center gap-1 text-xs font-semibold text-amber-700">
-                            <ShieldCheck className="h-3 w-3" /> {lang === "vi" ? "Nháp câu trả lời (cần duyệt)" : "Draft reply (needs approval)"}
+                            <ShieldCheck className="h-3 w-3" /> {lang === "vi" ? "Nháp phản hồi (cần phê duyệt)" : "Draft reply (needs approval)"}
                           </div>
                           <p className="mt-1 text-[11px] text-foreground/80">{m.draftReply}</p>
                         </div>
@@ -462,13 +420,31 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
                         </div>
                       )}
 
-                      {/* Source attribution */}
+                      {/* Simulated label for fallback mode or demo run */}
+                      {(m.providerMode === "fallback" || isDemo) && (
+                        <div className="inline-flex items-center gap-1 text-[10px] font-semibold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-100 select-none">
+                          {lang === "vi" ? "Dữ liệu mô phỏng" : "Simulated data"}
+                        </div>
+                      )}
+
+                      {/* Source attribution (Xem bằng chứng) */}
                       <SourceAttribution sources={m.sources ?? []} />
 
-                      {/* LLM badge + confidence */}
-                      <div className="flex items-center justify-between">
-                        <LLMBadge mode={m.mode} providerMode={m.providerMode} modelUsed={m.modelUsed} confidence={m.confidence} />
-                        <span className="text-[9px] text-muted-foreground">
+                      {/* Technical details accordion */}
+                      <details className="mt-2 text-xs">
+                        <summary className="cursor-pointer text-[10px] text-neutral-500 hover:text-foreground select-none font-semibold">
+                          {lang === "vi" ? "▸ Chi tiết kỹ thuật" : "▸ Technical details"}
+                        </summary>
+                        <div className="mt-1 pl-2 border-l border-neutral-200 text-[10px] text-neutral-500 space-y-0.5 font-mono">
+                          <div>Mô hình: {m.modelUsed || "fallback-rules"}</div>
+                          <div>Độ tin cậy: {m.confidence != null ? `${(m.confidence * 100).toFixed(0)}%` : "N/A"}</div>
+                          <div>Chế độ: {m.providerMode === "router" ? "Đồng bộ hóa AI (Router)" : "Chế độ dự phòng (Fallback)"}</div>
+                        </div>
+                      </details>
+
+                      {/* Message Timestamp */}
+                      <div className="flex items-center justify-end text-[9px] text-muted-foreground mt-1">
+                        <span>
                           {new Date(m.timestamp).toLocaleTimeString(lang === "vi" ? "vi-VN" : "en-GB", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" })}
                         </span>
                       </div>

@@ -283,34 +283,33 @@ ${traceEvidence}
 
   // Read Router API configuration
   let providerId = process.env.LLM_PROVIDER_ID || "gemini";
-  let adapter = (process.env.LLM_PROVIDER || "gemini") as any;
+  let adapter = (process.env.LLM_PROVIDER || "gemini-native") as any;
   let baseUrl = process.env.LLM_API_BASE_URL || "";
   let apiKey = process.env.LLM_API_KEY || "";
-  let model = process.env.LLM_MODEL || "gemini-2.5-flash-lite";
+  let model = process.env.LLM_MODEL || "";
   let extraHeaders: Record<string, string> = {};
 
   if (process.env.LLM_HTTP_REFERER) extraHeaders["HTTP-Referer"] = process.env.LLM_HTTP_REFERER;
   if (process.env.LLM_APP_TITLE) extraHeaders["X-Title"] = process.env.LLM_APP_TITLE;
 
-  if (!baseUrl || !model) {
-    try {
-      const dbConfig = await db.dataSourceConfig.findUnique({ where: { id: "src-ai-model" } });
-      if (dbConfig) {
-        if (dbConfig.apiUrl) baseUrl = dbConfig.apiUrl;
-        if (dbConfig.headers) {
-          const parsed = JSON.parse(dbConfig.headers);
-          if (parsed.selectedModel) model = parsed.selectedModel;
-          if (parsed.providerId) providerId = parsed.providerId;
-          if (parsed.adapter) adapter = parsed.adapter;
-          if (parsed.extraHeaders) extraHeaders = { ...extraHeaders, ...parsed.extraHeaders };
-        }
+  // Fallback to database config if env is not fully configured
+  try {
+    const dbConfig = await db.dataSourceConfig.findUnique({ where: { id: "src-ai-model" } });
+    if (dbConfig) {
+      if (dbConfig.apiUrl && !baseUrl) baseUrl = dbConfig.apiUrl;
+      if (dbConfig.headers) {
+        const parsed = JSON.parse(dbConfig.headers);
+        if (parsed.selectedModel && !model) model = parsed.selectedModel;
+        if (parsed.providerId && !providerId) providerId = parsed.providerId;
+        if (parsed.adapter && !adapter) adapter = parsed.adapter;
+        if (parsed.extraHeaders) extraHeaders = { ...extraHeaders, ...parsed.extraHeaders };
       }
-    } catch {
-      // ignore
     }
+  } catch {
+    // ignore
   }
 
-  const isGemini = adapter === "gemini" || providerId === "gemini";
+  const isGemini = adapter === "gemini-native" || adapter === "gemini" || providerId === "gemini";
   if (isGemini && !baseUrl) {
     baseUrl = "https://generativelanguage.googleapis.com";
   }
@@ -319,6 +318,8 @@ ${traceEvidence}
   let responseText = "";
   let providerMode: "router" | "fallback" = "fallback";
   let warningMessage = "";
+  let routerResultError = "";
+  let routerResultHttpStatus: number | null = null;
 
   if (canUseLLM) {
     const routerResult = await callRouterChatCompletion({
@@ -339,9 +340,12 @@ ${traceEvidence}
       responseText = routerResult.content.trim();
       providerMode = "router";
     } else {
-      warningMessage = "Đang dùng chế độ dự phòng vì Gemini chưa phản hồi.";
+      routerResultError = routerResult.error || "router_failed";
+      routerResultHttpStatus = routerResult.httpStatus || null;
+      warningMessage = routerResult.message || "Đang dùng chế độ dự phòng vì Gemini chưa phản hồi.";
     }
   } else {
+    routerResultError = "missing_env";
     warningMessage = "Đang dùng chế độ dự phòng vì kết nối AI chưa sẵn sàng.";
   }
 
@@ -372,17 +376,26 @@ ${traceEvidence}
 
   // Return strictly whitelisted fields
   const responseObj = {
+    ok: true,
     answer: cleanAnswer,
+    runId: run.id,
+    groundedInRun: true,
     providerMode: providerMode,
+    providerId: providerId,
+    adapter: adapter,
     modelUsed: providerMode === "router" ? model : "fallback-rules",
-    confidence: providerMode === "router" ? 0.95 : 0.85,
+    warning: providerMode === "fallback" ? warningMessage : null,
     sources: [
       { label: "Phiên chạy", value: run.id },
       { label: "Cửa hàng", value: store.name },
       { label: "Thời tiết", value: weather.isLive ? "Thực tế" : "Mô phỏng" },
       { label: "Vận hành", value: opsBaselineMode === "live" ? "Dữ liệu thực tế" : "Dữ liệu mô phỏng" },
     ],
-    warning: providerMode === "fallback" ? warningMessage : undefined,
+    debug: {
+      routerConfigured: canUseLLM,
+      reason: providerMode === "router" ? "router_success" : routerResultError,
+      httpStatus: providerMode === "router" ? 200 : routerResultHttpStatus,
+    }
   };
 
   return new NextResponse(JSON.stringify(responseObj), {

@@ -4,6 +4,7 @@ export type ProviderAdapter =
   | "ollama"
   | "anthropic"
   | "gemini"
+  | "gemini-native"
   | "manual";
 
 export type ModelDiscoveryMode =
@@ -244,12 +245,12 @@ export const PROVIDER_REGISTRY: ProviderDefinition[] = [
     id: "gemini",
     labelVi: "Google Gemini",
     labelEn: "Google Gemini",
-    adapter: "gemini",
+    adapter: "gemini-native",
     defaultBaseUrl: "https://generativelanguage.googleapis.com",
-    supportsModelDiscovery: false,
+    supportsModelDiscovery: true,
     supportsChat: true,
     requiresApiKey: true,
-    modelDiscoveryMode: "none",
+    modelDiscoveryMode: "gemini-models",
     noteVi: "Gemini dùng API native, cần adapter riêng.",
     noteEn: "Gemini uses a native API, requiring a dedicated adapter.",
   },

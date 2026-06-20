@@ -54,6 +54,8 @@ export async function discoverModels({
     }
   } else if (modelDiscoveryMode === "ollama-tags") {
     endpointsToTry.push(`${normalizedUrl}/api/tags`);
+  } else if (modelDiscoveryMode === "gemini-models") {
+    endpointsToTry.push(`${normalizedUrl}/v1beta/models`);
   } else {
     // If we have an unsupported mode (e.g. anthropic-models) that we haven't implemented yet
     return { ok: true, models: [] };
@@ -67,11 +69,18 @@ export async function discoverModels({
         "Content-Type": "application/json",
         ...extraHeaders,
       };
-      if (apiKey) {
-        headers["Authorization"] = `Bearer ${apiKey}`;
+      
+      let requestUrl = url;
+      if (modelDiscoveryMode === "gemini-models") {
+        headers["x-goog-api-key"] = apiKey || "";
+        requestUrl = `${url}?key=${apiKey || ""}`;
+      } else {
+        if (apiKey) {
+          headers["Authorization"] = `Bearer ${apiKey}`;
+        }
       }
 
-      const res = await fetch(url, {
+      const res = await fetch(requestUrl, {
         method: "GET",
         headers,
         signal: AbortSignal.timeout(8000), // 8-second timeout
@@ -85,7 +94,22 @@ export async function discoverModels({
 
       const json = await res.json() as any;
 
-      if (modelDiscoveryMode === "openai-models" && json && Array.isArray(json.data)) {
+      if (modelDiscoveryMode === "gemini-models" && json && Array.isArray(json.models)) {
+        const filtered = json.models.filter((m: any) => {
+          if (m.supportedGenerationMethods && Array.isArray(m.supportedGenerationMethods)) {
+            return m.supportedGenerationMethods.includes("generateContent");
+          }
+          return true;
+        });
+
+        const models: NormalizedModel[] = filtered.map((m: any) => ({
+          id: m.name.replace(/^models\//, ""),
+          label: m.displayName || m.name,
+          providerId,
+          raw: m,
+        }));
+        return { ok: true, models };
+      } else if (modelDiscoveryMode === "openai-models" && json && Array.isArray(json.data)) {
         const models: NormalizedModel[] = json.data.map((m: any) => ({
           id: m.id,
           label: m.id,

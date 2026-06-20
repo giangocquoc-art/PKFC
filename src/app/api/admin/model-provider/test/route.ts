@@ -1,4 +1,4 @@
-﻿import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getProviderById, type ProviderAdapter } from "@/lib/llm/providerRegistry";
 import { callRouterChatCompletion } from "@/lib/llm/routerChatClient";
 
@@ -83,7 +83,12 @@ export async function POST(req: Request) {
     }
 
     // 3. Return if adapter is not implemented
-    if (finalAdapter !== "openai-compatible" && finalAdapter !== "manual" && finalAdapter !== "gemini") {
+    if (
+      finalAdapter !== "openai-compatible" &&
+      finalAdapter !== "manual" &&
+      finalAdapter !== "gemini" &&
+      finalAdapter !== "gemini-native"
+    ) {
       return NextResponse.json({
         ok: false,
         status: "failed",
@@ -93,7 +98,7 @@ export async function POST(req: Request) {
     }
 
     // 4. Validate parameters
-    if (finalAdapter !== "gemini" && !baseUrl) {
+    if (finalAdapter !== "gemini" && finalAdapter !== "gemini-native" && !baseUrl) {
       return NextResponse.json({
         ok: false,
         status: "failed",

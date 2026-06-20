@@ -375,10 +375,18 @@ export default function IntegrationsPage() {
     const isManualMode = activeProvider.modelDiscoveryMode === "manual" || activeProvider.modelDiscoveryMode === "none";
     if (!llmBaseUrl && !isManualMode) return;
     
+    const targetModel = isManualMode ? llmManualModel : llmSelectedModel;
+    
+    if (llmProviderId === "gemini" && targetModel === "gpt-5.5") {
+      const errMsg = "Model này không thuộc Google Gemini. Hãy tải danh sách model Gemini hoặc chọn Custom OpenAI-compatible nếu dùng router.";
+      toast.error(errMsg);
+      setLlmTestResult({ ok: false, message: errMsg });
+      return;
+    }
+
     setLlmTestingModel(true);
     setLlmTestResult(null);
     try {
-      const targetModel = isManualMode ? llmManualModel : llmSelectedModel;
       const data = await fetchJson<{ ok: boolean; status: string; message: string }>("/api/admin/model-provider/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -412,6 +420,14 @@ export default function IntegrationsPage() {
       toast.error(lang === "vi" ? "Vui lòng chọn hoặc nhập một model trước khi lưu." : "Please select or enter a model before saving.");
       return;
     }
+
+    if (llmProviderId === "gemini" && targetModel === "gpt-5.5") {
+      const errMsg = "Model này không thuộc Google Gemini. Hãy tải danh sách model Gemini hoặc chọn Custom OpenAI-compatible nếu dùng router.";
+      toast.error(errMsg);
+      setLlmTestResult({ ok: false, message: errMsg });
+      return;
+    }
+
     setLlmSaving(true);
     try {
       const extraHeaders = getParsedHeaders();
@@ -894,6 +910,12 @@ export default function IntegrationsPage() {
             </div>
 
             {/* Model Selection Row */}
+            {llmProviderId === "gemini" && (
+              <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 text-xs rounded-lg leading-relaxed font-semibold">
+                Bạn đang dùng Google Gemini API trực tiếp. Hãy dùng model Gemini được tải từ danh sách model. Nếu muốn dùng router/model GPT, hãy chọn Custom OpenAI-compatible.
+              </div>
+            )}
+
             <div className="space-y-1.5 p-3 bg-white rounded-lg border border-neutral-200 shadow-xs">
               <Label htmlFor="llm-model-select" className="text-xs font-bold text-neutral-700">
                 {lang === "vi" ? "Model được chọn" : "Selected model"}
@@ -908,14 +930,18 @@ export default function IntegrationsPage() {
                       className="flex-1 rounded-md border border-neutral-200 px-3 py-1 text-xs h-9 bg-neutral-50 font-medium focus:ring-[#E4002B]"
                     >
                       <option value="">-- {lang === "vi" ? "Chưa chọn model" : "No model selected"} --</option>
-                      {llmModelsList.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.label} {m.ownedBy ? `(${m.ownedBy})` : ""}
-                        </option>
-                      ))}
-                      {llmSelectedModel && !llmModelsList.find((m) => m.id === llmSelectedModel) && (
-                        <option value={llmSelectedModel}>{llmSelectedModel} (Khôi phục từ cấu hình)</option>
-                      )}
+                      {llmModelsList
+                        .filter((m) => llmProviderId !== "gemini" || m.id.toLowerCase().includes("gemini"))
+                        .map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.label} {m.ownedBy ? `(${m.ownedBy})` : ""}
+                          </option>
+                        ))}
+                      {llmSelectedModel && 
+                        !llmModelsList.find((m) => m.id === llmSelectedModel) && 
+                        (llmProviderId !== "gemini" || llmSelectedModel.toLowerCase().includes("gemini")) && (
+                          <option value={llmSelectedModel}>{llmSelectedModel} (Khôi phục từ cấu hình)</option>
+                        )}
                     </select>
                     <Button
                       type="button"

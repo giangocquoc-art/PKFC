@@ -194,7 +194,40 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
   const [lastResponseMode, setLastResponseMode] = React.useState<"router" | "fallback" | null>(null);
   const [lastResponseModel, setLastResponseModel] = React.useState<string | null>(null);
 
+  const [modelStatus, setModelStatus] = React.useState<{
+    configured: boolean;
+    providerId: string;
+    model: string;
+  } | null>(null);
+
   const { lang } = useLang();
+
+  React.useEffect(() => {
+    let active = true;
+    const checkModelHealth = async () => {
+      try {
+        const data = await fetchJson<{
+          ok: boolean;
+          configured: boolean;
+          providerId: string;
+          model: string;
+        }>("/api/admin/model-provider/health");
+        if (active && data.ok) {
+          setModelStatus({
+            configured: data.configured,
+            providerId: data.providerId,
+            model: data.model,
+          });
+        }
+      } catch {
+        // ignore
+      }
+    };
+    void checkModelHealth();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   React.useEffect(() => {
     queueMicrotask(() => {
@@ -295,6 +328,19 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
                 <span className="text-neutral-500 font-semibold">
                   {lang === "vi" ? "Đang trả lời dựa trên phiên phân tích hiện tại" : "Answering based on current shift analysis"}
                 </span>
+
+                {modelStatus && (
+                  <Badge variant="outline" className={cn(
+                    "text-[9px] font-bold h-4 px-1.5 shrink-0 select-none",
+                    modelStatus.configured 
+                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                      : "bg-amber-50 text-amber-700 border-amber-200"
+                  )}>
+                    {modelStatus.configured 
+                      ? `${modelStatus.providerId === "gemini" ? "Gemini Native" : modelStatus.providerId} (${modelStatus.model})`
+                      : (lang === "vi" ? "Chế độ dự phòng" : "Fallback mode")}
+                  </Badge>
+                )}
 
                 {isDemo && (
                   <Badge variant="destructive" className="text-[9px] font-bold bg-red-100 text-red-700 border-red-200 h-4 px-1.5 shrink-0">

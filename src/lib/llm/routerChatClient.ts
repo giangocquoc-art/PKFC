@@ -20,11 +20,103 @@ interface RouterChatCompletionResult {
   error?: string;
   message?: string;
   raw?: unknown;
+  providerId?: string;
+  adapter?: ProviderAdapter;
+  httpStatus?: number;
+}
+
+/**
+ * Helper function to perform fetch with 20 seconds timeout and retry once for network timeouts only.
+ * Normalizes HTTP error status codes to OpenAI-compatible status reasons. Never logs API keys.
+ */
+async function fetchWithRetryAndTimeout(
+  url: string,
+  options: RequestInit,
+  timeoutMs = 20000
+): Promise<{ ok: boolean; status: number; text: string; json?: any; errorReason?: string; errorMessage?: string }> {
+  let attempt = 1;
+  const maxAttempts = 2; // 1 original + 1 retry
+
+  while (attempt <= maxAttempts) {
+    const controller = new AbortController();
+    const signal = controller.signal;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(url, {
+        ...options,
+        signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        const status = res.status;
+        let errorReason = "invalid_response";
+        if (status === 401 || status === 403) {
+          errorReason = "invalid_api_key";
+        } else if (status === 404) {
+          errorReason = "model_not_found";
+        }
+
+        return {
+          ok: false,
+          status,
+          text,
+          errorReason,
+          errorMessage: `API returned status ${status}: ${text || res.statusText}`,
+        };
+      }
+
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const json = await res.json();
+        return { ok: true, status: res.status, text: "", json };
+      } else {
+        const text = await res.text();
+        return { ok: true, status: res.status, text };
+      }
+
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      const isTimeout = err.name === "TimeoutError" || err.message?.includes("timeout") || err.name === "AbortError";
+
+      if (isTimeout) {
+        if (attempt < maxAttempts) {
+          attempt++;
+          continue;
+        }
+        return {
+          ok: false,
+          status: 0,
+          text: "",
+          errorReason: "provider_timeout",
+          errorMessage: `Request timed out after ${timeoutMs}ms.`,
+        };
+      }
+
+      return {
+        ok: false,
+        status: 0,
+        text: "",
+        errorReason: "provider_unreachable",
+        errorMessage: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    status: 0,
+    text: "",
+    errorReason: "provider_unreachable",
+    errorMessage: "Unknown error occurred.",
+  };
 }
 
 /**
  * Calls AI model endpoints based on the provider adapter.
- * Never logs API keys and normalizes results and errors.
+ * Supports native Google Gemini generateContent API and standard OpenAI-compatible completions.
  */
 export async function callRouterChatCompletion({
   providerId,
@@ -33,118 +125,114 @@ export async function callRouterChatCompletion({
   apiKey,
   model,
   messages,
-  temperature = 0.3,
-  maxTokens = 800,
+  temperature = 0.2,
+  maxTokens = 1024,
   customChatPath,
   extraHeaders,
 }: RouterChatCompletionArgs): Promise<RouterChatCompletionResult> {
-  if (adapter === "manual") {
-    adapter = "openai-compatible"; // Fallback for manual user entry assuming standard format
-  }
+  const isGeminiNative = providerId === "gemini" || adapter === "gemini-native" || adapter === "gemini";
 
-  if (adapter === "gemini") {
-    if (!apiKey) {
-      return { ok: false, error: "missing_apiKey", message: "API key is required for Gemini." };
+  if (isGeminiNative) {
+    if (!apiKey || !model) {
+      return {
+        ok: false,
+        error: "missing_env",
+        message: "API key or Model is missing for Google Gemini native adapter.",
+      };
     }
-    const modelName = model || "gemini-1.5-flash";
+
+    const modelName = model;
     const host = (baseUrl || "https://generativelanguage.googleapis.com").trim().replace(/\/+$/, "");
     const completionsUrl = `${host}/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
-    try {
-      let systemInstructionText = "";
-      const contents: Array<{ role: "user" | "model"; parts: Array<{ text: string }> }> = [];
+    const systemMsg = messages.find((m) => m.role === "system")?.content || "";
+    const userMsg = messages.find((m) => m.role === "user")?.content || "";
+    const promptText = systemMsg ? `${systemMsg}\n\n${userMsg}` : userMsg;
 
-      for (const msg of messages) {
-        if (msg.role === "system") {
-          systemInstructionText += (systemInstructionText ? "\n" : "") + msg.content;
-        } else {
-          contents.push({
-            role: msg.role === "assistant" ? "model" : "user",
-            parts: [{ text: msg.content }],
-          });
-        }
-      }
-
-      const body: any = {
-        contents,
-      };
-
-      if (systemInstructionText) {
-        body.systemInstruction = {
-          parts: [{ text: systemInstructionText }],
-        };
-      }
-
-      body.generationConfig = {
+    const body = {
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: promptText }],
+        },
+      ],
+      generationConfig: {
         temperature: temperature,
         maxOutputTokens: maxTokens,
-      };
+      },
+    };
 
-      const res = await fetch(completionsUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...extraHeaders,
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(15000), // 15-second timeout
-      });
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "x-goog-api-key": apiKey,
+      ...extraHeaders,
+    };
 
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        return {
-          ok: false,
-          error: `http_${res.status}`,
-          message: `Gemini API returned status ${res.status}: ${text || res.statusText}`,
-        };
-      }
+    const res = await fetchWithRetryAndTimeout(completionsUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
 
-      const json = await res.json() as any;
-      const parts = json?.candidates?.[0]?.content?.parts;
-      if (!parts || !Array.isArray(parts)) {
-        return {
-          ok: false,
-          error: "invalid_response_format",
-          message: "Gemini API did not return a valid candidate parts array.",
-          raw: json,
-        };
-      }
-      const content = parts.map((p: any) => p.text || "").join("");
-
-      return {
-        ok: true,
-        content,
-        model: modelName,
-        raw: json,
-      };
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
+    if (!res.ok) {
       return {
         ok: false,
-        error: "completion_request_failed",
-        message: `Failed to complete chat with Gemini: ${errorMessage}`,
+        error: res.errorReason || "invalid_response",
+        message: res.errorMessage || "Google Gemini native API generateContent failed.",
+        providerId: "gemini",
+        adapter: "gemini-native",
+        httpStatus: res.status,
       };
     }
+
+    const json = res.json;
+    const candidates = json?.candidates;
+    const parts = candidates?.[0]?.content?.parts;
+    const content = parts?.[0]?.text || "";
+
+    if (!content) {
+      return {
+        ok: false,
+        error: "empty_response",
+        message: "Google Gemini native API returned empty candidates content parts text.",
+        providerId: "gemini",
+        adapter: "gemini-native",
+      };
+    }
+
+    return {
+      ok: true,
+      content,
+      model: modelName,
+      providerId: "gemini",
+      adapter: "gemini-native",
+      httpStatus: res.status,
+    };
+  }
+
+  // Fallback / OpenAI-compatible provider flow
+  if (adapter === "manual") {
+    adapter = "openai-compatible";
   }
 
   if (adapter !== "openai-compatible") {
     return {
       ok: false,
       error: "adapter_not_implemented",
-      message: "This provider requires a native adapter that is not implemented yet. / Provider này cần adapter riêng chưa được hỗ trợ.",
+      message: `Adapter type ${adapter} not supported or implemented in this pilot.`,
     };
   }
 
-  if (!baseUrl) {
-    return { ok: false, error: "missing_baseUrl", message: "Base URL is required." };
-  }
-  if (!model) {
-    return { ok: false, error: "missing_model", message: "Model is required." };
+  if (!apiKey || !model || !baseUrl) {
+    return {
+      ok: false,
+      error: "missing_env",
+      message: "Missing LLM_API_KEY, LLM_MODEL, or LLM_API_BASE_URL environment config on server.",
+    };
   }
 
-  // Normalize baseUrl
   const trimmedUrl = baseUrl.trim();
-  let normalizedUrl = trimmedUrl.replace(/\/+$/, "");
+  const normalizedUrl = trimmedUrl.replace(/\/+$/, "");
   let completionsUrl = "";
 
   if (customChatPath) {
@@ -152,72 +240,52 @@ export async function callRouterChatCompletion({
   } else if (normalizedUrl.endsWith("/v1")) {
     completionsUrl = `${normalizedUrl}/chat/completions`;
   } else {
-    // If it's a known URL format or just raw base, try to guess
     completionsUrl = `${normalizedUrl}/v1/chat/completions`;
   }
 
-  try {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      ...extraHeaders,
-    };
-    if (apiKey) {
-      headers["Authorization"] = `Bearer ${apiKey}`;
-    }
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...extraHeaders,
+  };
+  headers["Authorization"] = `Bearer ${apiKey}`;
 
-    const body = {
-      model,
-      messages,
-      temperature,
-      max_tokens: maxTokens,
-    };
+  const body = {
+    model,
+    messages,
+    temperature,
+    max_tokens: maxTokens,
+  };
 
-    const res = await fetch(completionsUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15000), // 15-second timeout
-    });
+  const res = await fetchWithRetryAndTimeout(completionsUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      return {
-        ok: false,
-        error: `http_${res.status}`,
-        message: `API returned status ${res.status}: ${text || res.statusText}`,
-      };
-    }
-
-    const json = await res.json() as any;
-
-    let content = "";
-    if (json?.choices?.[0]?.message?.content != null) {
-      content = json.choices[0].message.content;
-    } else if (json?.choices?.[0]?.text != null) {
-      content = json.choices[0].text;
-    } else if (json?.choices?.[0]?.delta?.content != null) {
-      content = json.choices[0].delta.content;
-    } else {
-      return {
-        ok: false,
-        error: "invalid_response_format",
-        message: "API did not return a valid chat completion text choice.",
-        raw: json,
-      };
-    }
-
-    return {
-      ok: true,
-      content,
-      model: json.model || model,
-      raw: json,
-    };
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
+  if (!res.ok) {
     return {
       ok: false,
-      error: "completion_request_failed",
-      message: `Failed to complete chat: ${errorMessage}`,
+      error: res.errorReason || "invalid_response",
+      message: res.errorMessage || "OpenAI-compatible chat completions failed.",
+      httpStatus: res.status,
     };
   }
+
+  const json = res.json;
+  const content = json?.choices?.[0]?.message?.content || json?.choices?.[0]?.text || "";
+
+  if (!content) {
+    return {
+      ok: false,
+      error: "empty_response",
+      message: "API did not return a valid chat completion text choices.",
+    };
+  }
+
+  return {
+    ok: true,
+    content,
+    model: json.model || model,
+    httpStatus: res.status,
+  };
 }

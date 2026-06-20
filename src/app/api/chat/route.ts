@@ -24,6 +24,24 @@ function deriveOpsModeFromTrace(trace: any[]): "live" | "csv" | "simulated" | "n
   return "none";
 }
 
+function safeText(value: unknown, fallback = "Chưa có dữ liệu") {
+  if (value == null || value === "") return fallback;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function formatTraceEvidence(trace: any[]) {
+  return trace
+    .slice(0, 8)
+    .map((t) => `- ${safeText(t.agentName, "Tác nhân")} (${safeText(t.phase, "bước")}): ${safeText(t.output, safeText(t.status, "đã xử lý"))}`)
+    .join("\n");
+}
+
+function isGreetingOnly(input: string) {
+  return /^(hello|hi|hey|chào|xin chào|alo|agent camate|camate)[!.\s]*$/i.test(input.trim());
+}
+
 /** Reconstruct an AgentRunResult from a Prisma AgentRun record. */
 function reconstructRun(run: {
   storeId: string;
@@ -194,25 +212,56 @@ export async function POST(req: Request) {
     traceSummary,
   };
 
+  const simulationNotice = run.isLive && opsBaselineMode === "live" ? "Không" : "Có, nếu dùng demo/fallback/simulated hãy nói rõ dựa trên dữ liệu mô phỏng.";
+
   // System Prompt
-  const systemPrompt = language === "vi"
-    ? "Bạn là Agent CaMate, trợ lý đồng quản lý ca cho cửa hàng KFC. Chỉ trả lời dựa trên CONTEXT của phiên chạy hiện tại. Không được bịa số liệu, không được tự thêm dữ liệu ngoài context. Nếu context không đủ, hãy nói rõ là chưa đủ dữ liệu. Các hành động nhạy cảm luôn là bản nháp cần quản lý duyệt."
-    : "You are Agent CaMate, a StoreOps Decision Agent for KFC shift managers. Answer only from the CURRENT RUN CONTEXT. Do not invent numbers, demand, weather, staffing, inventory, approval status, or real KFC data. If the context is insufficient, say so. Sensitive actions are draft recommendations requiring manager approval.";
+  const systemPrompt = `Bạn là Agent CaMate, trợ lý vận hành ca cho cửa hàng KFC.
+Nhiệm vụ của bạn là trả lời câu hỏi của quản lý dựa trên dữ liệu phiên chạy hiện tại.
+Chỉ dùng dữ liệu trong CONTEXT. Không bịa số liệu.
+Nếu thiếu dữ liệu, nói rõ “Tôi chưa có đủ dữ liệu để kết luận”.
+Văn phong: tiếng Việt, chuyên nghiệp, thân thiện, ngắn gọn, dễ dùng ngay.
+Không dùng JSON. Không dùng ký tự trang trí. Không dùng markdown quá rối.
+Luôn ưu tiên format:
+1. Kết luận nhanh
+2. Bằng chứng từ dữ liệu
+3. Đề xuất hành động
+4. Mức độ tin cậy
 
-  const userPrompt = `
-CURRENT RUN CONTEXT:
-${JSON.stringify(contextObj, null, 2)}
+Nếu người dùng chỉ chào hỏi như “hello”, “hi”, “chào”, hãy trả lời thân thiện:
+“Chào anh/chị, tôi là Agent CaMate. Tôi có thể giúp phân tích rủi ro ca, tồn kho, nhân sự, giao hàng và các việc cần quản lý duyệt dựa trên phiên chạy hiện tại.”`;
 
-MANAGER QUESTION:
+  const userPrompt = isGreetingOnly(message)
+    ? `CÂU HỎI NGƯỜI DÙNG:\n${message}\n\nYÊU CẦU TRẢ LỜI:\n- Trả lời đúng câu chào mẫu trong system prompt bằng tiếng Việt.`
+    : `DỮ LIỆU PHIÊN CHẠY:
+- Mã phiên: ${run.id}
+- Cửa hàng: ${store.name} (${store.id}), khu vực ${store.district}
+- Nguồn dữ liệu: weather=${dataSourceMode.weather}, operations=${dataSourceMode.operations}, inventory=${dataSourceMode.inventory}, staffing=${dataSourceMode.staffing}
+- Dữ liệu mô phỏng/demo/fallback: ${simulationNotice}
+- Tín hiệu thời tiết: nhiệt độ ${safeText(weather.temperatureC)}°C; rủi ro mưa ${weather.rainRiskScore != null ? `${(weather.rainRiskScore * 100).toFixed(0)}%` : "Chưa có dữ liệu"}; rủi ro gián đoạn giao hàng ${weather.deliveryDisruptionRisk != null ? `${(weather.deliveryDisruptionRisk * 100).toFixed(0)}%` : "Chưa có dữ liệu"}
+- Dự báo nhu cầu: trưa walk-in ${safeText(plan.slots?.[0]?.expectedWalkInDelta)}%, delivery ${safeText(plan.slots?.[0]?.expectedDeliveryDelta)}%; tối walk-in ${safeText(plan.slots?.[1]?.expectedWalkInDelta)}%, delivery ${safeText(plan.slots?.[1]?.expectedDeliveryDelta)}%
+- Đề xuất chuẩn bị nguyên liệu: ${safeText(plan.prepRecommendation)}
+- Đề xuất nhân sự: ${safeText(plan.staffingRecommendation)}
+- Rủi ro giao hàng: ${safeText(plan.deliveryReadiness)}
+- Việc cần quản lý duyệt: ${approvalRequests.join("; ")}
+- Bằng chứng/trace ngắn gọn:
+${formatTraceEvidence(trace)}
+
+CÂU HỎI NGƯỜI DÙNG:
 ${message}
-  `;
+
+YÊU CẦU TRẢ LỜI:
+- Trả lời bằng tiếng Việt.
+- Không hiện JSON.
+- Không nhắc “contextObj”.
+- Không nhắc internal trace nếu không cần.
+- Nếu dữ liệu là demo/mô phỏng thì nói rõ “dựa trên dữ liệu mô phỏng”.`;
 
   // Read Router API configuration from Server Environment or Database
-  let providerId = process.env.LLM_PROVIDER_ID || "custom-openai-compatible";
-  let adapter = (process.env.LLM_PROVIDER || "openai-compatible") as any;
+  let providerId = process.env.LLM_PROVIDER_ID || "gemini";
+  let adapter = (process.env.LLM_PROVIDER || "gemini") as any;
   let baseUrl = process.env.LLM_API_BASE_URL || "";
   let apiKey = process.env.LLM_API_KEY || "";
-  let model = process.env.LLM_MODEL || "";
+  let model = process.env.LLM_MODEL || "gemini-2.5-flash-lite";
   let extraHeaders: Record<string, string> = {};
 
   if (process.env.LLM_HTTP_REFERER) extraHeaders["HTTP-Referer"] = process.env.LLM_HTTP_REFERER;
@@ -236,11 +285,17 @@ ${message}
     }
   }
 
+  const isGemini = adapter === "gemini" || providerId === "gemini";
+  if (isGemini && !baseUrl) {
+    baseUrl = "https://generativelanguage.googleapis.com";
+  }
+  const canUseLLM = !!apiKey && !!model && (isGemini || !!baseUrl);
+
   let responseText = "";
   let providerMode: "router" | "fallback" = "fallback";
   let warningMessage = "";
 
-  if (baseUrl && model) {
+  if (canUseLLM) {
     const messages = [
       { role: "system" as const, content: systemPrompt },
       { role: "user" as const, content: userPrompt }
@@ -258,24 +313,27 @@ ${message}
     });
 
     if (routerResult.ok && routerResult.content) {
-      responseText = routerResult.content;
+      responseText = routerResult.content.trim();
       providerMode = "router";
     } else {
       warningMessage = routerResult.error === "adapter_not_implemented"
-        ? (language === "vi" 
-            ? "Đang dùng câu trả lời dự phòng vì provider này cần adapter riêng chưa được triển khai." 
-            : "Selected provider adapter is not implemented yet. Using fallback.")
-        : (language === "vi"
-            ? `Đang dùng câu trả lời dự phòng vì Router API lỗi: ${routerResult.message || "Kết nối thất bại"}.`
-            : `Using fallback answer because Router API call failed: ${routerResult.message || "Connection failed"}.`);
+        ? "Dùng dự phòng vì adapter chưa được hỗ trợ."
+        : `Dùng dự phòng vì Gemini lỗi: ${routerResult.message || "kết nối thất bại"}.`;
     }
   } else {
-    warningMessage = language === "vi"
-      ? "Đang dùng câu trả lời dự phòng vì Router API chưa cấu hình."
-      : "Using fallback answer because Router API is not configured.";
+    warningMessage = "Dùng dự phòng vì thiếu cấu hình LLM.";
   }
 
   if (providerMode === "fallback") {
+    console.warn("/api/chat fallback", {
+      providerId,
+      adapter,
+      hasApiKey: !!apiKey,
+      hasModel: !!model,
+      hasBaseUrl: !!baseUrl,
+      error: warningMessage,
+    });
+
     // Call the local deterministic fallback
     const profile = buildStoreOperatingProfile(store);
     const risk = runRiskIntelligence(store, profile, agentResult.weather);
@@ -293,7 +351,7 @@ ${message}
       knowledge,
     });
 
-    responseText = fallbackAns.answer;
+    responseText = fallbackAns.answer?.trim() || "Chào anh/chị, tôi chưa nhận được câu hỏi vận hành cụ thể. Anh/chị có thể hỏi về rủi ro ca, tồn kho, nhân sự, giao hàng hoặc việc cần duyệt trong phiên chạy hiện tại.";
   }
 
   const needsApproval = body.role === "customer";
@@ -305,13 +363,16 @@ ${message}
     answer: responseText,
     sources: providerMode === "router"
       ? [
-          { label: "Run Context", value: `Run ID ${run.id}` },
-          { label: "Store", value: store.name },
-          { label: "Weather Signal", value: weather.isLive ? "live" : "fallback" },
+          { label: "Phiên chạy", value: run.id },
+          { label: "Cửa hàng", value: store.name },
+          { label: "Tín hiệu thời tiết", value: weather.isLive ? "live" : "fallback" },
+          { label: "Đề xuất ca", value: plan.prepRecommendation },
         ]
       : [
-          { label: "Weather signal", value: weather.isLive ? "live" : "fallback" },
-          { label: "Shift recommendation", value: plan.prepRecommendation },
+          { label: "Phiên chạy", value: run.id },
+          { label: "Cửa hàng", value: store.name },
+          { label: "Tín hiệu thời tiết", value: weather.isLive ? "live" : "fallback" },
+          { label: "Đề xuất ca", value: plan.prepRecommendation },
         ],
     confidence: providerMode === "router" ? 0.95 : 0.85,
     needsApproval,

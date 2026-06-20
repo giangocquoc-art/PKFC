@@ -39,6 +39,8 @@ interface ChatMessage {
   draftReply?: string;
   escalateToHuman?: boolean;
   mode?: string;
+  providerMode?: "router" | "fallback";
+  modelUsed?: string;
   timestamp: string;
 }
 
@@ -80,12 +82,12 @@ const ROLE_CONFIG: Record<InteractionRole, {
     icon: Headphones,
     color: "text-[var(--brand)]",
     activeBg: "bg-[var(--brand)] text-white shadow-md shadow-[var(--brand)]/20",
-    placeholderEn: "Type your question about prep, staffing, or risks...",
+    placeholderEn: "Type your question here...",
     placeholderVi: "Nhập câu hỏi về lượng chế biến, nhân sự hoặc rủi ro ca...",
     suggestionsEn: [],
     suggestionsVi: [],
-    descriptionEn: "Strategic decisions & risk analysis",
-    descriptionVi: "Quyết định chiến lược & Phân tích rủi ro",
+    descriptionEn: "Risk analysis and operations recommendations",
+    descriptionVi: "Phân tích rủi ro và đề xuất vận hành",
   },
   staff: {
     labelEn: "Staff Assistant",
@@ -153,9 +155,9 @@ function SourceAttribution({ sources }: { sources: { label: string; value: strin
 }
 
 /* ─── LLM Badge ─── */
-function LLMBadge({ mode, confidence }: { mode?: string; confidence?: number }) {
+function LLMBadge({ mode, providerMode, modelUsed, confidence }: { mode?: string; providerMode?: "router" | "fallback"; modelUsed?: string; confidence?: number }) {
   const { lang } = useLang();
-  const isLive = mode === "live";
+  const isLive = providerMode === "router" || mode === "live";
   return (
     <div className="flex items-center gap-1.5">
       <Badge
@@ -167,9 +169,14 @@ function LLMBadge({ mode, confidence }: { mode?: string; confidence?: number }) 
       >
         <Sparkles className="h-2.5 w-2.5" />
         {isLive 
-          ? (lang === "vi" ? "Mô hình AI" : "Powered by LLM") 
-          : (lang === "vi" ? "Chế độ dự phòng" : "Fallback Mode")}
+          ? (lang === "vi" ? "Đang dùng Gemini" : "Using Gemini") 
+          : (lang === "vi" ? "Chế độ dự phòng" : "Fallback mode")}
       </Badge>
+      {isLive && modelUsed && (
+        <span className="text-[9px] text-muted-foreground">
+          {lang === "vi" ? "Mô hình" : "Model"}: {modelUsed}
+        </span>
+      )}
       {confidence != null && (
         <span className="text-[9px] text-muted-foreground">
           {(confidence * 100).toFixed(0)}% {lang === "vi" ? "độ tin cậy" : "confidence"}
@@ -194,33 +201,16 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
   const [loading, setLoading] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
-  const [activeModel, setActiveModel] = React.useState<string | null>(null);
-  const [hasRouterConfig, setHasRouterConfig] = React.useState(false);
   const [lastResponseMode, setLastResponseMode] = React.useState<"router" | "fallback" | null>(null);
   const [lastResponseModel, setLastResponseModel] = React.useState<string | null>(null);
 
   const { lang } = useLang();
 
   React.useEffect(() => {
-    // Check if Router API is configured on the server
-    const checkConfig = async () => {
-      try {
-        const res = await fetch("/api/admin/model-provider/config");
-        const data = await res.json();
-        if (data.ok && data.config && data.config.baseUrl && data.config.model) {
-          setActiveModel(data.config.model);
-          setHasRouterConfig(true);
-        }
-      } catch {
-        // ignore
-      }
-    };
-    checkConfig();
-  }, []);
-
-  React.useEffect(() => {
     queueMicrotask(() => {
       setMessages([]);
+      setLastResponseMode(null);
+      setLastResponseModel(null);
     });
   }, [storeId, role]);
 
@@ -270,6 +260,8 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
           draftReply: data.draftReply,
           escalateToHuman: data.escalateToHuman,
           mode: data.mode,
+          providerMode: data.providerMode,
+          modelUsed: data.modelUsed,
           timestamp: new Date().toISOString(),
         },
       ]);
@@ -287,13 +279,13 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
   const activeSuggestions = lang === "vi" ? cfg.suggestionsVi : cfg.suggestionsEn;
   const activeDescription = lang === "vi" ? cfg.descriptionVi : cfg.descriptionEn;
 
-  const currentMode = lastResponseMode || (hasRouterConfig ? "router" : "fallback");
-  const displayModel = lastResponseModel || activeModel;
+  const displayModel = lastResponseModel;
 
-  const isRouterActive = currentMode === "router";
+  const isRouterActive = lastResponseMode === "router";
+  const isFallbackActive = lastResponseMode === "fallback";
   const modeLabel = lang === "vi"
-    ? (isRouterActive ? "Chế độ trả lời: Router API" : "Chế độ trả lời: Quy tắc dự phòng")
-    : (isRouterActive ? "Answer mode: Router API" : "Answer mode: Fallback Rules");
+    ? (isRouterActive ? "Đang dùng Gemini" : isFallbackActive ? "Chế độ trả lời: Chế độ dự phòng" : "Sẵn sàng trả lời dựa trên phiên chạy hiện tại")
+    : (isRouterActive ? "Using Gemini" : isFallbackActive ? "Answer mode: Fallback mode" : "Ready to answer from the current run");
 
   return (
     <Card className={cn("card-interactive overflow-hidden flex flex-col", className)}>
@@ -302,7 +294,7 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
           <div>
             <CardTitle className="flex items-center gap-2 text-base">
               <Bot className="h-4 w-4 text-[#E4002B]" />
-              {lang === "vi" ? "Hỏi Trợ lý CaMate" : "Ask Agent CaMate"}
+              {lang === "vi" ? "Hỏi Trợ lý CaMate" : "Ask CaMate Assistant"}
             </CardTitle>
             <p className="mt-1 text-xs text-muted-foreground">
               {activeDescription} · {activeLabel}
@@ -321,16 +313,16 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
                 </Badge>
 
                 {/* Model name */}
-                {isRouterActive && displayModel && (
-                  <span className="text-neutral-400 font-semibold shrink-0">
-                    {lang === "vi" ? "Mô hình" : "Model"}: {displayModel}
-                  </span>
-                )}
+                  {isRouterActive && displayModel && (
+                   <span className="text-neutral-400 font-semibold shrink-0">
+                     {lang === "vi" ? "Mô hình" : "Model"}: {displayModel}
+                   </span>
+                 )}
 
                 {/* Fallback warning badge */}
-                {!isRouterActive && (
+                {isFallbackActive && (
                   <Badge variant="outline" className="text-[9px] font-bold bg-amber-50 text-amber-700 border-amber-200 gap-1 h-4 px-1.5 shrink-0">
-                    {lang === "vi" ? "Mô phỏng bằng quy tắc" : "Rule Simulation"}
+                    {lang === "vi" ? "Mô phỏng bằng quy tắc" : "Rule simulation"}
                   </Badge>
                 )}
 
@@ -343,7 +335,7 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
               </div>
             )}
           </div>
-          {runId && <LLMBadge mode={messages.length > 0 ? messages[messages.length - 1].mode : (isRouterActive ? "live" : "fallback")} />}
+          {runId && messages.length > 0 && <LLMBadge mode={messages[messages.length - 1].mode} providerMode={messages[messages.length - 1].providerMode} modelUsed={messages[messages.length - 1].modelUsed} />}
         </div>
         {/* ── Role selector — pill-style buttons with icons ── */}
         <div className="mt-3 flex gap-1.5">
@@ -400,7 +392,7 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
                   <p className="text-sm font-semibold">{activeLabel}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {lang === "vi"
-                      ? "Đặt câu hỏi — Trợ lý sẽ trả lời dựa trên kế hoạch ca trực đang chạy và tài liệu SOP cửa hàng."
+                      ? "Sẵn sàng trả lời dựa trên phiên chạy hiện tại"
                       : "Ask a question — the assistant answers using the current shift plan and SOP documents."}
                   </p>
                 </div>
@@ -465,7 +457,7 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
 
                       {/* LLM badge + confidence */}
                       <div className="flex items-center justify-between">
-                        <LLMBadge mode={m.mode} confidence={m.confidence} />
+                        <LLMBadge mode={m.mode} providerMode={m.providerMode} modelUsed={m.modelUsed} confidence={m.confidence} />
                         <span className="text-[9px] text-muted-foreground">
                           {new Date(m.timestamp).toLocaleTimeString(lang === "vi" ? "vi-VN" : "en-GB", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit" })}
                         </span>
@@ -508,7 +500,7 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
             onChange={(e) => setInput(e.target.value)}
             placeholder={
               lang === "vi"
-                ? "Nhập câu hỏi của bạn tại đây..."
+                ? "Nhập câu hỏi của bạn..."
                 : "Type your question here..."
             }
             disabled={loading || !storeId || !runId}

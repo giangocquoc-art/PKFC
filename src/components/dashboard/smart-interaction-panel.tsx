@@ -154,6 +154,16 @@ function SourceAttribution({ sources }: { sources: { label: string; value: strin
   );
 }
 
+function cleanChatText(text: string) {
+  return text
+    .replace(/```(?:json)?/gi, "")
+    .replace(/```/g, "")
+    .replace(/contextObj/gi, "dữ liệu phiên chạy")
+    .replace(/^[\s{[][^\n]{0,80}$/gm, "")
+    .slice(0, 1800)
+    .trim();
+}
+
 /* ─── LLM Badge ─── */
 function LLMBadge({ mode, providerMode, modelUsed, confidence }: { mode?: string; providerMode?: "router" | "fallback"; modelUsed?: string; confidence?: number }) {
   const { lang } = useLang();
@@ -253,7 +263,7 @@ export function SmartInteractionPanel({ storeId, runId, className, isDemo }: Sma
         ...prev,
         {
           role: "agent",
-          text: data.answer,
+          text: cleanChatText(data.answer),
           sources: data.sources,
           confidence: data.confidence,
           needsApproval: data.needsApproval,

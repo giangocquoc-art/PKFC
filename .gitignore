@@ -10,3 +10,5 @@
 *.tsbuildinfo
 *.bak_final
 tool-results/
+.vercel
+.env*

@@ -31,15 +31,94 @@ function safeText(value: unknown, fallback = "Chưa có dữ liệu") {
   return JSON.stringify(value);
 }
 
+function repairVietnameseMojibake(value: string) {
+  const directFixed = value
+    .replace(/KFC Lê Lai/g, "KFC Lê Lai")
+    .replace(/Quận/g, "Quận")
+    .replace(/Rủi ro/g, "Rủi ro")
+    .replace(/Dịch chuyển nhu cầu/g, "Dịch chuyển nhu cầu")
+    .replace(/Chưa có dữ liệu cuối ngày để học/g, "Chưa có dữ liệu cuối ngày để học")
+    .replace(/11:30–13:30/g, "11:30–13:30")
+    .replace(/11:30–13:00/g, "11:30–13:00")
+    .replace(/â\u0013/g, "–")
+    .replace(/–/g, "–")
+    .replace(/—/g, "—")
+    .replace(/‘/g, "‘")
+    .replace(/’/g, "’")
+    .replace(/“/g, "“")
+    .replace(/”/g, "”")
+    .replace(/…/g, "…");
+
+  if (!/(?:Ã[\u0080-\u00ff]|áº|á»|Æ°|Ä[\u0080-\u00ff])/.test(directFixed)) return directFixed;
+
+  const repaired = Buffer.from(directFixed, "latin1").toString("utf8");
+  return repaired.includes("�") ? directFixed : repaired
+    .replace(/�/g, "")
+    .replace(/11:30[â\u0013\-]+13:30/g, "11:30–13:30")
+    .replace(/11:30[â\u0013\-]+13:00/g, "11:30–13:00");
+}
+
+function cleanText(value: unknown, fallback = "Chưa có dữ liệu") {
+  return repairVietnameseMojibake(safeText(value, fallback))
+    .replace(/[{}[\]"]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function deepRepairMojibake<T>(value: T): T {
+  if (typeof value === "string") return repairVietnameseMojibake(value) as T;
+  if (Array.isArray(value)) return value.map((item) => deepRepairMojibake(item)) as T;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, deepRepairMojibake(item)]),
+    ) as T;
+  }
+  return value;
+}
+
 function formatTraceEvidence(trace: any[]) {
   return trace
-    .slice(0, 8)
-    .map((t) => `- ${safeText(t.agentName, "Tác nhân")} (${safeText(t.phase, "bước")}): ${safeText(t.output, safeText(t.status, "đã xử lý"))}`)
+    .slice(0, 5)
+    .map((t) => `- ${cleanText(t.agentName, "Tác nhân")} (${cleanText(t.phase, "bước")}): ${cleanText(t.output, cleanText(t.status, "đã xử lý")).slice(0, 180)}`)
     .join("\n");
 }
 
 function isGreetingOnly(input: string) {
   return /^(hello|hi|hey|chào|xin chào|alo|agent camate|camate)[!.\s]*$/i.test(input.trim());
+}
+
+function normalizeChatAnswer(answer: string) {
+  const repaired = repairVietnameseMojibake(answer).trim();
+  if (!repaired) return "";
+
+  const withoutCodeFences = repaired
+    .replace(/```(?:json)?/gi, "")
+    .replace(/```/g, "")
+    .replace(/contextObj/gi, "dữ liệu phiên chạy")
+    .trim();
+
+  if (/^[\s{[]/.test(withoutCodeFences)) {
+    try {
+      const parsed = JSON.parse(withoutCodeFences);
+      if (typeof parsed === "string") return normalizeChatAnswer(parsed);
+      if (parsed && typeof parsed === "object") {
+        const obj = parsed as Record<string, unknown>;
+        const conclusion = cleanText(obj.conclusion || obj["Kết luận nhanh"] || obj.answer || obj.summary, "Tôi chưa có đủ dữ liệu để kết luận");
+        const evidenceText = cleanText(obj.evidence || obj["Bằng chứng"] || obj.reason, "Chưa có bằng chứng bổ sung");
+        const action = cleanText(obj.action || obj.recommendation || obj["Đề xuất hành động"], "Tiếp tục theo dõi phiên chạy và xác nhận với quản lý trước khi thay đổi vận hành");
+        const confidence = cleanText(obj.confidence || obj["Mức độ tin cậy"], "Trung bình");
+        return `1. Kết luận nhanh\n${conclusion}\n\n2. Bằng chứng\n${evidenceText}\n\n3. Đề xuất hành động\n${action}\n\n4. Mức độ tin cậy\n${confidence}`;
+      }
+    } catch {
+      // Fall through to text cleanup.
+    }
+  }
+
+  return withoutCodeFences
+    .replace(/^[-*]\s*/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .slice(0, 1800)
+    .trim();
 }
 
 /** Reconstruct an AgentRunResult from a Prisma AgentRun record. */
@@ -52,14 +131,14 @@ function reconstructRun(run: {
   isLive: boolean;
   triggeredAt: Date;
 }): AgentRunResult & { opsBaselineMode?: string; dataSources?: any } {
-  const trace = JSON.parse(run.traceJson);
-  const plan = JSON.parse(run.planJson);
+  const trace = deepRepairMojibake(JSON.parse(run.traceJson));
+  const plan = deepRepairMojibake(JSON.parse(run.planJson));
   return {
     storeId: run.storeId,
     storeName: run.storeName,
     trace,
     plan,
-    briefing: JSON.parse(run.briefingJson),
+    briefing: deepRepairMojibake(JSON.parse(run.briefingJson)),
     beforeAfter: [],
     weather: trace[1]?.structuredOutput?.signal ?? trace.find((t: { agentName: string }) => t.agentName === "Weather Signal Agent")?.structuredOutput ?? {},
     weatherProvenance: {
@@ -92,7 +171,7 @@ export async function POST(req: Request) {
       ok: false,
       error: "invalid_body",
       message: "Invalid JSON body / Yêu cầu không hợp lệ.",
-    }, { status: 400 });
+    }, { status: 400, headers: { "Content-Type": "application/json; charset=utf-8" } });
   }
 
   const runId = body.runId;
@@ -104,7 +183,7 @@ export async function POST(req: Request) {
       ok: false,
       error: "missing_message",
       message: language === "vi" ? "Tin nhắn là bắt buộc." : "Message is required.",
-    }, { status: 400 });
+    }, { status: 400, headers: { "Content-Type": "application/json; charset=utf-8" } });
   }
 
   if (!runId) {
@@ -112,7 +191,7 @@ export async function POST(req: Request) {
       ok: false,
       error: "missing_runId",
       message: language === "vi" ? "Mã phiên chạy (runId) là bắt buộc." : "Run ID (runId) is required.",
-    }, { status: 400 });
+    }, { status: 400, headers: { "Content-Type": "application/json; charset=utf-8" } });
   }
 
   // Load the exact AgentRun by Prisma ID (or find latest overall if runId is 'latest')
@@ -130,7 +209,7 @@ export async function POST(req: Request) {
       ok: false,
       error: "db_error",
       message: language === "vi" ? "Lỗi truy vấn cơ sở dữ liệu." : "Database query failed.",
-    }, { status: 500 });
+    }, { status: 500, headers: { "Content-Type": "application/json; charset=utf-8" } });
   }
 
   if (!run) {
@@ -138,7 +217,7 @@ export async function POST(req: Request) {
       ok: false,
       error: "run_not_found",
       message: language === "vi" ? "Không tìm thấy phiên chạy này." : "Run not found.",
-    });
+    }, { headers: { "Content-Type": "application/json; charset=utf-8" } });
   }
 
   // Reconstruct context
@@ -160,57 +239,24 @@ export async function POST(req: Request) {
   };
 
   // Extract signals
-  const signals = [
-    `Weather: Temp ${weather.temperatureC}°C, Rain risk ${(weather.rainRiskScore * 100).toFixed(0)}%, Delivery disruption risk ${(weather.deliveryDisruptionRisk * 100).toFixed(0)}%`,
-    `Lunch expected walk-in delta: ${plan.slots[0]?.expectedWalkInDelta}%, delivery delta: ${plan.slots[0]?.expectedDeliveryDelta}%`,
-    `Dinner expected walk-in delta: ${plan.slots[1]?.expectedWalkInDelta}%, delivery delta: ${plan.slots[1]?.expectedDeliveryDelta}%`,
-  ];
-
-  // Extract actions
-  const actions = [
-    `Prep recommendation: ${plan.prepRecommendation}`,
-    `Staffing recommendation: ${plan.staffingRecommendation}`,
-    `Delivery readiness: ${plan.deliveryReadiness}`,
-    `Campaign recommendation: ${plan.campaignRecommendation}`,
-  ];
-
   // Extract approval requests
   const approvalRequests: string[] = [];
   for (const step of trace) {
     if (step.structuredOutput && step.structuredOutput.approvalRequired) {
-      approvalRequests.push(JSON.stringify(step.structuredOutput));
+      approvalRequests.push(cleanText(step.structuredOutput.summary || step.structuredOutput.reason || step.output || "Cần quản lý duyệt"));
     } else if (step.agentName && step.agentName.toLowerCase().includes("approval") && step.output) {
-      approvalRequests.push(step.output);
+      approvalRequests.push(cleanText(step.output));
     }
   }
   if (approvalRequests.length === 0) {
-    approvalRequests.push("None");
+    approvalRequests.push("Không có việc cần duyệt trong dữ liệu hiện tại");
   }
 
   // Extract evidence
   const evidence = trace
     .filter((t) => t.phase === "collect" || t.phase === "analyze" || t.dataSource === "live" || t.dataSource === "fallback")
-    .map((t) => `${t.agentName}: ${t.output}`);
-
-  // Extract trace summary
-  const traceSummary = trace.map((t) => `Step ${t.step}: ${t.agentName} (${t.phase}) - Status: ${t.status}`);
-
-  // Build context object
-  const contextObj = {
-    runId: run.id,
-    store: {
-      id: store.id,
-      name: store.name,
-      district: store.district,
-      type: (store as any).storeType || "standard",
-    },
-    dataSourceMode,
-    signals,
-    actions,
-    approvalRequests,
-    evidence,
-    traceSummary,
-  };
+    .slice(0, 5)
+    .map((t) => `${cleanText(t.agentName)}: ${cleanText(t.output || t.status).slice(0, 180)}`);
 
   const simulationNotice = run.isLive && opsBaselineMode === "live" ? "Không" : "Có, nếu dùng demo/fallback/simulated hãy nói rõ dựa trên dữ liệu mô phỏng.";
 
@@ -234,14 +280,14 @@ Nếu người dùng chỉ chào hỏi như “hello”, “hi”, “chào”, 
     ? `CÂU HỎI NGƯỜI DÙNG:\n${message}\n\nYÊU CẦU TRẢ LỜI:\n- Trả lời đúng câu chào mẫu trong system prompt bằng tiếng Việt.`
     : `DỮ LIỆU PHIÊN CHẠY:
 - Mã phiên: ${run.id}
-- Cửa hàng: ${store.name} (${store.id}), khu vực ${store.district}
+- Cửa hàng: ${cleanText(store.name)} (${store.id}), khu vực ${cleanText(store.district)}
 - Nguồn dữ liệu: weather=${dataSourceMode.weather}, operations=${dataSourceMode.operations}, inventory=${dataSourceMode.inventory}, staffing=${dataSourceMode.staffing}
 - Dữ liệu mô phỏng/demo/fallback: ${simulationNotice}
 - Tín hiệu thời tiết: nhiệt độ ${safeText(weather.temperatureC)}°C; rủi ro mưa ${weather.rainRiskScore != null ? `${(weather.rainRiskScore * 100).toFixed(0)}%` : "Chưa có dữ liệu"}; rủi ro gián đoạn giao hàng ${weather.deliveryDisruptionRisk != null ? `${(weather.deliveryDisruptionRisk * 100).toFixed(0)}%` : "Chưa có dữ liệu"}
 - Dự báo nhu cầu: trưa walk-in ${safeText(plan.slots?.[0]?.expectedWalkInDelta)}%, delivery ${safeText(plan.slots?.[0]?.expectedDeliveryDelta)}%; tối walk-in ${safeText(plan.slots?.[1]?.expectedWalkInDelta)}%, delivery ${safeText(plan.slots?.[1]?.expectedDeliveryDelta)}%
-- Đề xuất chuẩn bị nguyên liệu: ${safeText(plan.prepRecommendation)}
-- Đề xuất nhân sự: ${safeText(plan.staffingRecommendation)}
-- Rủi ro giao hàng: ${safeText(plan.deliveryReadiness)}
+- Đề xuất chuẩn bị nguyên liệu: ${cleanText(plan.prepRecommendation)}
+- Đề xuất nhân sự: ${cleanText(plan.staffingRecommendation)}
+- Rủi ro giao hàng: ${cleanText(plan.deliveryReadiness)}
 - Việc cần quản lý duyệt: ${approvalRequests.join("; ")}
 - Bằng chứng/trace ngắn gọn:
 ${formatTraceEvidence(trace)}
@@ -313,7 +359,7 @@ YÊU CẦU TRẢ LỜI:
     });
 
     if (routerResult.ok && routerResult.content) {
-      responseText = routerResult.content.trim();
+      responseText = normalizeChatAnswer(routerResult.content);
       providerMode = "router";
     } else {
       warningMessage = routerResult.error === "adapter_not_implemented"
@@ -351,7 +397,7 @@ YÊU CẦU TRẢ LỜI:
       knowledge,
     });
 
-    responseText = fallbackAns.answer?.trim() || "Chào anh/chị, tôi chưa nhận được câu hỏi vận hành cụ thể. Anh/chị có thể hỏi về rủi ro ca, tồn kho, nhân sự, giao hàng hoặc việc cần duyệt trong phiên chạy hiện tại.";
+    responseText = normalizeChatAnswer(fallbackAns.answer || "") || "Chào anh/chị, tôi chưa nhận được câu hỏi vận hành cụ thể. Anh/chị có thể hỏi về rủi ro ca, tồn kho, nhân sự, giao hàng hoặc việc cần duyệt trong phiên chạy hiện tại.";
   }
 
   const needsApproval = body.role === "customer";
@@ -364,15 +410,15 @@ YÊU CẦU TRẢ LỜI:
     sources: providerMode === "router"
       ? [
           { label: "Phiên chạy", value: run.id },
-          { label: "Cửa hàng", value: store.name },
+          { label: "Cửa hàng", value: cleanText(store.name) },
           { label: "Tín hiệu thời tiết", value: weather.isLive ? "live" : "fallback" },
-          { label: "Đề xuất ca", value: plan.prepRecommendation },
+          { label: "Đề xuất ca", value: cleanText(plan.prepRecommendation).slice(0, 120) },
         ]
       : [
           { label: "Phiên chạy", value: run.id },
-          { label: "Cửa hàng", value: store.name },
+          { label: "Cửa hàng", value: cleanText(store.name) },
           { label: "Tín hiệu thời tiết", value: weather.isLive ? "live" : "fallback" },
-          { label: "Đề xuất ca", value: plan.prepRecommendation },
+          { label: "Đề xuất ca", value: cleanText(plan.prepRecommendation).slice(0, 120) },
         ],
     confidence: providerMode === "router" ? 0.95 : 0.85,
     needsApproval,
@@ -386,8 +432,12 @@ YÊU CẦU TRẢ LỜI:
     runId: run.id,
     modelUsed: providerMode === "router" ? model : "fallback-rules",
     providerMode: providerMode,
-    evidenceUsed: evidence.slice(0, 5),
+    evidenceUsed: evidence,
     dataSourceMode: dataSourceMode,
     warning: providerMode === "fallback" ? warningMessage : undefined,
+  }, {
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+    },
   });
 }

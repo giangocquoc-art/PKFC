@@ -1,0 +1,21 @@
+﻿---
+description: Agent CaMate project rules
+alwaysApply: true
+---
+
+Before making any code change, read:
+
+- AGENTS.md
+- .agents/skills/*/SKILL.md
+
+Follow all project skills and rules.
+
+Do not fake data.
+Do not leak secrets.
+Do not render raw JSON in chat UI.
+Do not show demo/fallback data as real.
+Keep visible UI Vietnamese.
+Run lint and build before reporting done.
+
+Correct product flow:
+User question + current AgentRun data + clean context + Gemini = grounded F&B/KFC operations answer.

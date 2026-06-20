@@ -510,3 +510,14 @@ See [`CHANGELOG.md`](./CHANGELOG.md) for the full table. Quick summary:
 - **Approval buttons**: UI placeholders only — no backend approval endpoint wired to the new workflow state.
 - **`fetchJson`**: Wired into most client components but not all (store-profile, weather panel use direct fetch).
 - **`/api/simulate`**: Calls `runAgentPipeline` directly (documented: applies custom weather overrides that bypass the normal observe phase).
+
+## Agent instructions
+
+Before modifying this project, coding agents must read:
+
+- `AGENTS.md`
+- `.agents/skills/*/SKILL.md`
+- `CLAUDE.md`
+- `.cursor/rules/agent-camate.mdc`
+
+These files define the required behavior for grounded Gemini chat, F&B StoreOps logic, human approval guardrails, data quality, and hackathon QA.
